@@ -29,11 +29,13 @@ Each index JSON file is an array of records that share the same hash:
 - **email**: trim, lowercase
 - **cert_no**: trim, uppercase
 
-The SALT is a fixed, non-secret string. It must be **identical** in all three
+The SALT is a fixed, non-secret string. It must be **identical** in both
 places that compute hashes:
-- `public/assets/config.js` (used by both `index.html` and `gen/index.html`)
+- `public/assets/config.js` (used by `index.html`)
 - `tools/bootstrap_bucket.py` (Python can't import the `.js` file, so it has
   its own literal copy — a comment there says "MUST match config.js exactly")
+
+(`public/gen/index.html` doesn't hash or index anything — see §5.)
 
 Certificate filenames include a random component so they can't be enumerated
 by guessing adjacent numbers, even though the underlying certificate numbers
@@ -110,35 +112,25 @@ for PDF) plus a direct "Download Certificate" link to the GCS file.
 
 ## 5. Admin page (`public/gen/index.html`) — hidden, unlinked
 
-For adding a certificate that was missed during the original bulk run,
-without needing server/database access. Not linked from anywhere; disallowed
-in `robots.txt`; has a `noindex,nofollow` meta tag.
+For quickly generating a certificate image for someone who was missed during
+the original bulk run — e.g. to send directly to the student. Not linked from
+anywhere; disallowed in `robots.txt`; has a `noindex,nofollow` meta tag.
 
 - **Passphrase gate is not real security.** It's plain client-side JS, fully
   visible via "View Source" — its only purpose is to stop an accidental
-  stumble onto the URL. Real access control is GCS IAM: grant the
-  **Storage Object Creator** role, scoped to the `certificate_baa` bucket
-  only, to relevant team members (see §6). This page never contains or uses
-  any write credentials.
-- Fields: Name, Phone, Email, Certificate Number, Course/Program, Date.
-  Course/Program and Date are metadata only — matching the existing
-  `generate_certificates.ps1` behavior, the canvas overlay draws only Name and
-  Certificate No. onto the template (same rect/coordinates/font-shrink rule).
+  stumble onto the URL.
+- Fields: Name, Certificate Number. On submit, it draws them onto the
+  template (same rect/coordinates/font-shrink rule as
+  `generate_certificates.ps1` — see below) and offers a "Download
+  Certificate" button that saves the plain JPG.
   Caveat: browser Canvas 2D and the original GDI+ renderer use different font
   metrics, so this is a close visual match, not pixel-identical.
-- On submit, it renders the certificate, computes the same hashes as the
-  public site, **fetches the existing index file from the live bucket and
-  merges into it** (so it doesn't clobber other students sharing that hash),
-  and packages the certificate + updated index JSON files into a ZIP mirroring
-  the bucket structure.
-- **Concurrency warning:** if two team members generate certificates at the
-  same time and happen to touch the same index file, the last upload wins and
-  can silently drop the other's addition. Serialize `/gen` usage — don't run
-  it concurrently with a teammate.
-- After generating, the page shows on-screen instructions: download the ZIP,
-  extract it, open `console.cloud.google.com` → Storage →
-  `certificate_baa`, and upload the extracted `certs/` and `index/` contents,
-  overwriting same-named files.
+- **This does not touch the bucket or the search index.** A certificate
+  generated here is *not* searchable on the public site — it's only for
+  handing/sending directly to that one person. If it should also be
+  searchable, add it to the bucket separately (see `tools/bootstrap_bucket.py`
+  for the batch pattern, or upload it and its index files by hand following
+  the bucket layout in §1).
 
 ## 6. GCS bucket setup (done for `certificate_baa` — kept here for reference / for setting up a new bucket)
 
@@ -161,10 +153,11 @@ missing files (not 403), and anonymous bucket listing returns 401.
    gsutil cors set cors.json gs://certificate_baa
    ```
    (`cors.json` in this repo already has the real Pages origin filled in.)
-3. **IAM for `/gen` users**: grant `Storage Object Creator`, scoped to just
-   this bucket, to each team member who needs to use `/gen` and upload the
-   resulting ZIP contents. This is separate from anything in this repo — no
-   write credentials of any kind exist in the codebase.
+3. **Write access**: `/gen` doesn't upload anything, so no team member needs
+   bucket IAM just to use it. If you separately want people able to upload
+   new batches themselves (rather than asking for that to be done for them),
+   grant `Storage Object Creator`, scoped to just this bucket, to those
+   people. No write credentials of any kind exist in this codebase.
 
 ## 7. Deployment
 
@@ -187,10 +180,8 @@ uploaded to the bucket, test with 2–3 real names/certificate numbers pulled
 from `certificate_manifest.csv`, plus a real phone number from the xlsx.
 
 **Test `/gen` locally too** (`http://localhost:8000/gen/index.html`):
-generate a throwaway test certificate, unzip the result, and inspect the
-JSON — then repeat with a name that's already in the bootstrapped bucket data
-to confirm it *merges* into the existing index file rather than overwriting
-it.
+generate a throwaway test certificate and confirm the downloaded JPG looks
+right. It's a self-contained page — no bucket calls involved.
 
 **After deploying**, re-run the same search tests against the live
 `https://<user>.github.io/<repo>/` URL, not just localhost — a CORS
@@ -208,8 +199,9 @@ while silently failing every `fetch()` in production.
   brute-force script. This is an inherent limit of hash-obfuscation without a
   real secret/backend — acceptable for a closed-audience "simple and correct"
   tool, but worth knowing.
-- `/gen`'s merge-then-upload flow has a race condition under concurrent use
-  (see §5).
+- Certificates generated via `/gen` are not searchable on the site — it only
+  produces a downloadable image (see §5). To make a `/gen`-generated
+  certificate searchable, it needs to be added to the bucket separately.
 - Canvas-rendered certificates from `/gen` are a close, not pixel-perfect,
   match to the original GDI+-rendered batch.
 - Phone matching uses "last 10 digits" rather than a strict "exactly 10

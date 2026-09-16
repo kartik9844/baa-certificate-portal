@@ -17,10 +17,9 @@
     </header>
 
     <div class="warning-banner">
-      This page is for BAA team members only. It does not upload anything —
-      you'll download a ZIP and upload it yourself via the GCS console.
-      Do not run this at the same time as another teammate (see instructions
-      after generation).
+      This page is for BAA team members only. It just renders a certificate
+      image for you to download and send directly — it does not upload
+      anything or make the certificate searchable on the public site.
     </div>
 
     <div id="gateCard" class="card">
@@ -40,18 +39,6 @@
         <label for="certNoInput">Certificate Number</label>
         <input type="text" id="certNoInput" placeholder="e.g. BAATEM25-26083" required />
 
-        <label for="phoneInput" class="optional">Phone Number</label>
-        <input type="tel" id="phoneInput" />
-
-        <label for="emailInput" class="optional">Email</label>
-        <input type="email" id="emailInput" />
-
-        <label for="courseInput" class="optional">Course / Program</label>
-        <input type="text" id="courseInput" placeholder="Not drawn on the certificate — for your records only" />
-
-        <label for="dateInput" class="optional">Date</label>
-        <input type="date" id="dateInput" />
-
         <div style="margin-top: 20px;">
           <button type="submit" id="generateBtn">Generate Certificate</button>
         </div>
@@ -61,37 +48,18 @@
       <canvas id="certCanvas" width="2000" height="1414" hidden></canvas>
 
       <div id="downloadArea" hidden style="margin-top: 16px;">
-        <button id="downloadZipBtn" type="button">Download ZIP</button>
-      </div>
-
-      <div id="instructions" class="instructions" hidden>
-        <strong>Next steps:</strong>
-        <ol>
-          <li>Download the ZIP above (if you haven't already).</li>
-          <li>Extract it — you'll see a <code>certs/</code> folder and an <code>index/</code> folder.</li>
-          <li>Go to <a href="https://console.cloud.google.com/storage/browser" target="_blank" rel="noopener">console.cloud.google.com</a>
-            and open the <code id="bucketNameSpan"></code> bucket.</li>
-          <li>Upload the extracted <code>certs/</code> and <code>index/</code> folders into the bucket,
-            <strong>keeping the same folder structure</strong>.</li>
-          <li>When prompted, <strong>overwrite</strong> any files with the same name — the index files
-            in this ZIP already include the previously-existing records merged in, so overwriting is safe
-            <em>as long as no one else uploaded a change to the same index file after you generated this ZIP</em>.</li>
-        </ol>
+        <button id="downloadImageBtn" type="button">Download Certificate</button>
       </div>
     </div>
 
     <footer class="site-footer">&copy; Basava Acu Academy — internal tool</footer>
   </div>
 
-  <script src="vendor/jszip.min.js"></script>
-  <script src="../assets/config.js"></script>
   <script>
     // NOT real security — this passphrase ships in plain static JS, fully
     // visible via "View Source" or the network tab. Its only purpose is to
     // stop an accidental stumble onto this page by someone who found the
-    // URL. Real access control is the GCS "Storage Object Creator" IAM role,
-    // granted per teammate separately in the GCP console — this page never
-    // uses, stores, or transmits any write credentials at all.
+    // URL.
     // TODO before real use: change this from the placeholder value.
     const ADMIN_PASSPHRASE = "-rA77try_kLU";
 
@@ -100,9 +68,6 @@
     const passphraseInput = document.getElementById("passphraseInput");
     const unlockBtn = document.getElementById("unlockBtn");
     const gateMsg = document.getElementById("gateMsg");
-
-    document.getElementById("bucketNameSpan").textContent =
-      BUCKET_BASE_URL.split("/").pop();
 
     function tryUnlock() {
       if (passphraseInput.value === ADMIN_PASSPHRASE) {
@@ -128,7 +93,7 @@
     // Certificate No: Arial Bold, fixed 26px, left-aligned at (385, 1255).
     // Caveat: browser Canvas 2D and the original GDI+ (PowerShell/.NET)
     // renderer use different font-metrics engines, so this is a best-effort
-    // visual match to the existing 2,203 certificates, not pixel-identical.
+    // visual match to the existing certificates, not pixel-identical.
     const NAME_RECT = { x: 390, y: 838, w: 1220, h: 70 };
     const CERTNO_POINT = { x: 385, y: 1255 };
     const FONT_FAMILY = "Arial, Helvetica, sans-serif";
@@ -144,6 +109,10 @@
         });
       }
       return templateImgPromise;
+    }
+
+    function normalizeCertNo(s) {
+      return s.trim().toUpperCase();
     }
 
     async function renderCertificate(name, certNo) {
@@ -182,59 +151,20 @@
       return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
     }
 
-    function randomId() {
-      const bytes = crypto.getRandomValues(new Uint8Array(6));
-      return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
-    }
-
-    // Fetches the existing index/<field>/<hash>.json from the live public
-    // bucket, appends this record (de-duped), and returns the merged array
-    // as a JSON string ready to write into the ZIP. 404 -> brand new array.
-    async function buildMergedIndexJson(field, rawValue, record) {
-      const hash = await hashFor(field, rawValue);
-      const url = indexUrlFor(field, hash);
-      let existing = [];
-      try {
-        const resp = await fetch(url, { cache: "no-store" });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (Array.isArray(data)) existing = data;
-        } else if (resp.status !== 404) {
-          console.warn("Unexpected status fetching", url, resp.status);
-        }
-      } catch (err) {
-        console.warn("Fetch failed for", url, err);
-      }
-
-      const alreadyPresent = existing.some(
-        (r) => r && r.cert_no === record.cert_no && r.file === record.file
-      );
-      if (!alreadyPresent) existing.push(record);
-
-      return {
-        path: `index/${INDEX_FOLDER[field]}/${hash}.json`,
-        content: JSON.stringify(existing, null, 2),
-      };
-    }
-
     const genForm = document.getElementById("genForm");
     const genStatus = document.getElementById("genStatus");
     const downloadArea = document.getElementById("downloadArea");
-    const downloadZipBtn = document.getElementById("downloadZipBtn");
-    const instructions = document.getElementById("instructions");
-    let pendingZipBlob = null;
-    let pendingZipFilename = null;
+    const downloadImageBtn = document.getElementById("downloadImageBtn");
+    let pendingImageBlob = null;
+    let pendingImageFilename = null;
 
     genForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       downloadArea.hidden = true;
-      instructions.hidden = true;
-      pendingZipBlob = null;
+      pendingImageBlob = null;
 
       const name = document.getElementById("nameInput").value.trim();
       const certNo = document.getElementById("certNoInput").value.trim();
-      const phone = document.getElementById("phoneInput").value.trim();
-      const email = document.getElementById("emailInput").value.trim();
 
       if (!name || !certNo) {
         genStatus.textContent = "Name and Certificate Number are required.";
@@ -250,34 +180,12 @@
         const canvas = await renderCertificate(name, certNoUpper);
         const blob = await canvasToJpegBlob(canvas);
 
-        const rid = randomId();
-        const certFilename = `${rid}-${certNoUpper.toLowerCase()}.jpg`;
-        const record = { name, cert_no: certNoUpper, file: `certs/${certFilename}` };
+        pendingImageBlob = blob;
+        pendingImageFilename = `${certNoUpper.toLowerCase()}.jpg`;
 
-        genStatus.textContent = "Checking existing index files and merging…";
-
-        const fieldsToIndex = [["name", name], ["cert_no", certNo]];
-        if (phone) fieldsToIndex.push(["phone", phone]);
-        if (email) fieldsToIndex.push(["email", email]);
-
-        const indexEntries = await Promise.all(
-          fieldsToIndex.map(([field, raw]) => buildMergedIndexJson(field, raw, record))
-        );
-
-        const zip = new JSZip();
-        zip.file(`certs/${certFilename}`, blob);
-        for (const entry of indexEntries) {
-          zip.file(entry.path, entry.content);
-        }
-
-        const zipBlob = await zip.generateAsync({ type: "blob" });
-        pendingZipBlob = zipBlob;
-        pendingZipFilename = `baa-cert-${certNoUpper.toLowerCase()}-${rid}.zip`;
-
-        genStatus.textContent = "Certificate generated. Review the preview above, then download the ZIP.";
+        genStatus.textContent = "Certificate generated. Review the preview above, then download it.";
         genStatus.className = "status-msg";
         downloadArea.hidden = false;
-        instructions.hidden = false;
       } catch (err) {
         console.error(err);
         genStatus.textContent = "Something went wrong generating the certificate. Check the console for details.";
@@ -285,12 +193,12 @@
       }
     });
 
-    downloadZipBtn.addEventListener("click", () => {
-      if (!pendingZipBlob) return;
-      const url = URL.createObjectURL(pendingZipBlob);
+    downloadImageBtn.addEventListener("click", () => {
+      if (!pendingImageBlob) return;
+      const url = URL.createObjectURL(pendingImageBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = pendingZipFilename;
+      a.download = pendingImageFilename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
