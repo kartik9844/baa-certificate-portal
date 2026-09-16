@@ -140,21 +140,27 @@ in `robots.txt`; has a `noindex,nofollow` meta tag.
   `certificate_baa`, and upload the extracted `certs/` and `index/` contents,
   overwriting same-named files.
 
-## 6. GCS bucket setup (one-time, manual, outside this repo)
+## 6. GCS bucket setup (done for `certificate_baa` — kept here for reference / for setting up a new bucket)
 
-1. **Public read, object-level only — do not enable bucket listing.**
-   Grant `Storage Object Viewer` to `allUsers`, but do **not** grant any
-   `list`/bucket-level read. This lets known object URLs be fetched by
-   anyone, without allowing someone to browse/enumerate the bucket's
-   contents.
+**Status: done and verified live.** `allUsers` is granted
+`roles/storage.legacyObjectReader` (get-only, no list) and CORS allows GET
+from `https://kartik9844.github.io`. Confirmed: object fetches return 404 for
+missing files (not 403), and anonymous bucket listing returns 401.
+
+1. **Public read, object-level only — do not grant `Storage Object Viewer`.**
+   It looks like the obvious "public read" role, but it also grants
+   `storage.objects.list`, which lets anyone enumerate every object in the
+   bucket — defeating the whole point of random filenames. Use
+   **`roles/storage.legacyObjectReader`** instead: it grants only
+   `storage.objects.get`, and (unlike a custom role) doesn't require
+   `iam.roles.create` permission — just bind it to `allUsers` on the bucket.
 2. **CORS**, required because the search page's `fetch()` calls to
    `index/**/*.json` are cross-origin (GitHub Pages → storage.googleapis.com).
    `<img>`/`<embed>`/direct download links do *not* need this.
    ```
    gsutil cors set cors.json gs://certificate_baa
    ```
-   Edit `cors.json` first — replace the placeholder origin with your actual
-   GitHub Pages URL (and add a custom domain entry if you use one later).
+   (`cors.json` in this repo already has the real Pages origin filled in.)
 3. **IAM for `/gen` users**: grant `Storage Object Creator`, scoped to just
    this bucket, to each team member who needs to use `/gen` and upload the
    resulting ZIP contents. This is separate from anything in this repo — no
