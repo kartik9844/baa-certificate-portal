@@ -1,13 +1,15 @@
 .env
 credentials/
 gcs_upload/
+gcs_upload*/
 
 # Large source template images at repo root — a copy lives in public/assets/
 Add a subheading*.png
 
-# Source data / PII — never committed, only used locally to build gcs_upload/
+# Source data / PII — never committed, only used locally to build gcs_upload*/
 2025 TEM - CERTIFICATE ISSUE*.xlsx
-certificate_manifest.csv
+TEM_old_10k*
+certificate_manifest*.csv
 sorted_certificates/
 sorted_batch_pdfs/
 
