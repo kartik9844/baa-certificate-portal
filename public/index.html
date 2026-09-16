@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Certificate Search — Basava Acu Academy</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="site-header">
+      <h1>Certificate Search</h1>
+      <p>Basava Acu Academy — TEM course completion certificates</p>
+    </header>
+
+    <div class="card">
+      <div class="search-row">
+        <input
+          type="text"
+          id="searchInput"
+          placeholder="Name, phone number, email, or certificate number"
+          autocomplete="off"
+        />
+        <button id="searchBtn" type="button">Search</button>
+      </div>
+      <div id="statusMsg" class="status-msg"></div>
+      <ul id="resultsList" class="results-list" hidden></ul>
+      <div id="certPreview" class="cert-preview" hidden>
+        <div id="certPreviewMedia"></div>
+        <a id="downloadLink" class="download-link" href="#" download>
+          <button type="button">Download Certificate</button>
+        </a>
+      </div>
+    </div>
+
+    <footer class="site-footer">
+      &copy; Basava Acu Academy
+    </footer>
+  </div>
+
+  <script src="./assets/config.js"></script>
+  <script>
+    const searchInput = document.getElementById("searchInput");
+    const searchBtn = document.getElementById("searchBtn");
+    const statusMsg = document.getElementById("statusMsg");
+    const resultsList = document.getElementById("resultsList");
+    const certPreview = document.getElementById("certPreview");
+    const certPreviewMedia = document.getElementById("certPreviewMedia");
+    const downloadLink = document.getElementById("downloadLink");
+
+    function setStatus(text, kind) {
+      statusMsg.textContent = text || "";
+      statusMsg.className = "status-msg" + (kind ? " " + kind : "");
+    }
+
+    function resetResults() {
+      resultsList.hidden = true;
+      resultsList.innerHTML = "";
+      certPreview.hidden = true;
+      certPreviewMedia.innerHTML = "";
+    }
+
+    // Fetches one index/<field>/<hash>.json file. 404 means "no such record",
+    // which is expected and normal — never treated as an error.
+    async function fetchIndexRecords(field, rawValue) {
+      const hash = await hashFor(field, rawValue);
+      const url = indexUrlFor(field, hash);
+      try {
+        const resp = await fetch(url, { cache: "no-store" });
+        if (resp.status === 404) return [];
+        if (!resp.ok) {
+          console.warn("Unexpected status fetching", url, resp.status);
+          return [];
+        }
+        const data = await resp.json();
+        return Array.isArray(data) ? data : [];
+      } catch (err) {
+        console.warn("Fetch failed for", url, err);
+        return [];
+      }
+    }
+
+    function detectFieldsToQuery(raw) {
+      const digitsOnly = raw.replace(/\D+/g, "");
+      if (digitsOnly.length >= 10 && digitsOnly.length <= 12) {
+        return ["phone"];
+      }
+      if (raw.includes("@")) {
+        return ["email"];
+      }
+      return ["name", "cert_no"];
+    }
+
+    async function runSearch() {
+      const raw = searchInput.value.trim();
+      resetResults();
+      if (!raw) {
+        setStatus("Please enter your name, phone number, email, or certificate number.", "error");
+        return;
+      }
+
+      setStatus("Searching…", "muted");
+      searchBtn.disabled = true;
+
+      try {
+        const fields = detectFieldsToQuery(raw);
+        const resultArrays = await Promise.all(
+          fields.map((field) => fetchIndexRecords(field, raw))
+        );
+
+        const merged = new Map();
+        for (const arr of resultArrays) {
+          for (const record of arr) {
+            if (record && record.cert_no) {
+              merged.set(record.cert_no, record);
+            }
+          }
+        }
+
+        const records = Array.from(merged.values());
+        if (records.length === 0) {
+          setStatus("No certificate found. Please check your details.", "error");
+          return;
+        }
+
+        setStatus(`Found ${records.length} certificate${records.length > 1 ? "s" : ""}:`, "");
+        renderResults(records);
+      } finally {
+        searchBtn.disabled = false;
+      }
+    }
+
+    function renderResults(records) {
+      resultsList.innerHTML = "";
+      resultsList.hidden = false;
+      for (const record of records) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "result-btn";
+        btn.innerHTML = `${escapeHtml(record.name)}<span class="cert-no">${escapeHtml(record.cert_no)}</span>`;
+        btn.addEventListener("click", () => showCertificate(record));
+        li.appendChild(btn);
+        resultsList.appendChild(li);
+      }
+    }
+
+    function showCertificate(record) {
+      const url = fileUrlFor(record.file);
+      const ext = (record.file.split(".").pop() || "").toLowerCase();
+
+      certPreviewMedia.innerHTML = "";
+      if (ext === "pdf") {
+        const embed = document.createElement("embed");
+        embed.src = url;
+        embed.type = "application/pdf";
+        embed.width = "100%";
+        embed.height = "600";
+        certPreviewMedia.appendChild(embed);
+      } else {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = `Certificate ${record.cert_no}`;
+        certPreviewMedia.appendChild(img);
+      }
+
+      downloadLink.href = url;
+      certPreview.hidden = false;
+      certPreview.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement("div");
+      div.textContent = String(s == null ? "" : s);
+      return div.innerHTML;
+    }
+
+    searchBtn.addEventListener("click", runSearch);
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") runSearch();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Belt-and-suspenders against search engines: unlinked page + robots.txt
+       disallow (repo root only, see README caveat) + this meta tag. -->
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Generate Certificate (Admin) — Basava Acu Academy</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="site-header">
+      <h1>Generate Missing Certificate</h1>
+      <p>Internal tool — not linked from the public site</p>
+    </header>
+
+    <div class="warning-banner">
+      This page is for BAA team members only. It does not upload anything —
+      you'll download a ZIP and upload it yourself via the GCS console.
+      Do not run this at the same time as another teammate (see instructions
+      after generation).
+    </div>
+
+    <div id="gateCard" class="card">
+      <label for="passphraseInput">Passphrase</label>
+      <div class="search-row">
+        <input type="password" id="passphraseInput" placeholder="Enter passphrase" autocomplete="off" />
+        <button id="unlockBtn" type="button">Unlock</button>
+      </div>
+      <div id="gateMsg" class="status-msg error"></div>
+    </div>
+
+    <div id="formCard" class="card" hidden>
+      <form class="gen-form" id="genForm">
+        <label for="nameInput">Full Name</label>
+        <input type="text" id="nameInput" required />
+
+        <label for="certNoInput">Certificate Number</label>
+        <input type="text" id="certNoInput" placeholder="e.g. BAATEM25-26083" required />
+
+        <label for="phoneInput" class="optional">Phone Number</label>
+        <input type="tel" id="phoneInput" />
+
+        <label for="emailInput" class="optional">Email</label>
+        <input type="email" id="emailInput" />
+
+        <label for="courseInput" class="optional">Course / Program</label>
+        <input type="text" id="courseInput" placeholder="Not drawn on the certificate — for your records only" />
+
+        <label for="dateInput" class="optional">Date</label>
+        <input type="date" id="dateInput" />
+
+        <div style="margin-top: 20px;">
+          <button type="submit" id="generateBtn">Generate Certificate</button>
+        </div>
+      </form>
+
+      <div id="genStatus" class="status-msg"></div>
+      <canvas id="certCanvas" width="2000" height="1414" hidden></canvas>
+
+      <div id="downloadArea" hidden style="margin-top: 16px;">
+        <button id="downloadZipBtn" type="button">Download ZIP</button>
+      </div>
+
+      <div id="instructions" class="instructions" hidden>
+        <strong>Next steps:</strong>
+        <ol>
+          <li>Download the ZIP above (if you haven't already).</li>
+          <li>Extract it — you'll see a <code>certs/</code> folder and an <code>index/</code> folder.</li>
+          <li>Go to <a href="https://console.cloud.google.com/storage/browser" target="_blank" rel="noopener">console.cloud.google.com</a>
+            and open the <code id="bucketNameSpan"></code> bucket.</li>
+          <li>Upload the extracted <code>certs/</code> and <code>index/</code> folders into the bucket,
+            <strong>keeping the same folder structure</strong>.</li>
+          <li>When prompted, <strong>overwrite</strong> any files with the same name — the index files
+            in this ZIP already include the previously-existing records merged in, so overwriting is safe
+            <em>as long as no one else uploaded a change to the same index file after you generated this ZIP</em>.</li>
+        </ol>
+      </div>
+    </div>
+
+    <footer class="site-footer">&copy; Basava Acu Academy — internal tool</footer>
+  </div>
+
+  <script src="vendor/jszip.min.js"></script>
+  <script src="../assets/config.js"></script>
+  <script>
+    // NOT real security — this passphrase ships in plain static JS, fully
+    // visible via "View Source" or the network tab. Its only purpose is to
+    // stop an accidental stumble onto this page by someone who found the
+    // URL. Real access control is the GCS "Storage Object Creator" IAM role,
+    // granted per teammate separately in the GCP console — this page never
+    // uses, stores, or transmits any write credentials at all.
+    // TODO before real use: change this from the placeholder value.
+    const ADMIN_PASSPHRASE = "-rA77try_kLU";
+
+    const gateCard = document.getElementById("gateCard");
+    const formCard = document.getElementById("formCard");
+    const passphraseInput = document.getElementById("passphraseInput");
+    const unlockBtn = document.getElementById("unlockBtn");
+    const gateMsg = document.getElementById("gateMsg");
+
+    document.getElementById("bucketNameSpan").textContent =
+      BUCKET_BASE_URL.split("/").pop();
+
+    function tryUnlock() {
+      if (passphraseInput.value === ADMIN_PASSPHRASE) {
+        sessionStorage.setItem("baa_gen_unlocked", "1");
+        gateCard.hidden = true;
+        formCard.hidden = false;
+      } else {
+        gateMsg.textContent = "Incorrect passphrase.";
+      }
+    }
+    unlockBtn.addEventListener("click", tryUnlock);
+    passphraseInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") tryUnlock();
+    });
+    if (sessionStorage.getItem("baa_gen_unlocked") === "1") {
+      gateCard.hidden = true;
+      formCard.hidden = false;
+    }
+
+    // ---- Canvas overlay, ported 1:1 from generate_certificates.ps1 ----
+    // Name: Arial Bold, auto-shrink 54px -> 32px (2px steps) until width fits
+    //   within 1220px, centered in rect (x=390, y=838, w=1220, h=70).
+    // Certificate No: Arial Bold, fixed 26px, left-aligned at (385, 1255).
+    // Caveat: browser Canvas 2D and the original GDI+ (PowerShell/.NET)
+    // renderer use different font-metrics engines, so this is a best-effort
+    // visual match to the existing 2,203 certificates, not pixel-identical.
+    const NAME_RECT = { x: 390, y: 838, w: 1220, h: 70 };
+    const CERTNO_POINT = { x: 385, y: 1255 };
+    const FONT_FAMILY = "Arial, Helvetica, sans-serif";
+
+    let templateImgPromise = null;
+    function loadTemplateImage() {
+      if (!templateImgPromise) {
+        templateImgPromise = new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = "../assets/template.png";
+        });
+      }
+      return templateImgPromise;
+    }
+
+    async function renderCertificate(name, certNo) {
+      const canvas = document.getElementById("certCanvas");
+      const ctx = canvas.getContext("2d");
+      const templateImg = await loadTemplateImage();
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(templateImg, 0, 0, canvas.width, canvas.height);
+
+      let nameSize = 54;
+      let font;
+      while (true) {
+        font = `bold ${nameSize}px ${FONT_FAMILY}`;
+        ctx.font = font;
+        const width = ctx.measureText(name).width;
+        if (width <= NAME_RECT.w || nameSize <= 32) break;
+        nameSize -= 2;
+      }
+      ctx.font = font;
+      ctx.fillStyle = "#000000";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(name, NAME_RECT.x + NAME_RECT.w / 2, NAME_RECT.y, NAME_RECT.w);
+
+      ctx.font = `bold 26px ${FONT_FAMILY}`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(certNo, CERTNO_POINT.x, CERTNO_POINT.y);
+
+      canvas.hidden = false;
+      return canvas;
+    }
+
+    function canvasToJpegBlob(canvas) {
+      return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+    }
+
+    function randomId() {
+      const bytes = crypto.getRandomValues(new Uint8Array(6));
+      return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    // Fetches the existing index/<field>/<hash>.json from the live public
+    // bucket, appends this record (de-duped), and returns the merged array
+    // as a JSON string ready to write into the ZIP. 404 -> brand new array.
+    async function buildMergedIndexJson(field, rawValue, record) {
+      const hash = await hashFor(field, rawValue);
+      const url = indexUrlFor(field, hash);
+      let existing = [];
+      try {
+        const resp = await fetch(url, { cache: "no-store" });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (Array.isArray(data)) existing = data;
+        } else if (resp.status !== 404) {
+          console.warn("Unexpected status fetching", url, resp.status);
+        }
+      } catch (err) {
+        console.warn("Fetch failed for", url, err);
+      }
+
+      const alreadyPresent = existing.some(
+        (r) => r && r.cert_no === record.cert_no && r.file === record.file
+      );
+      if (!alreadyPresent) existing.push(record);
+
+      return {
+        path: `index/${INDEX_FOLDER[field]}/${hash}.json`,
+        content: JSON.stringify(existing, null, 2),
+      };
+    }
+
+    const genForm = document.getElementById("genForm");
+    const genStatus = document.getElementById("genStatus");
+    const downloadArea = document.getElementById("downloadArea");
+    const downloadZipBtn = document.getElementById("downloadZipBtn");
+    const instructions = document.getElementById("instructions");
+    let pendingZipBlob = null;
+    let pendingZipFilename = null;
+
+    genForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      downloadArea.hidden = true;
+      instructions.hidden = true;
+      pendingZipBlob = null;
+
+      const name = document.getElementById("nameInput").value.trim();
+      const certNo = document.getElementById("certNoInput").value.trim();
+      const phone = document.getElementById("phoneInput").value.trim();
+      const email = document.getElementById("emailInput").value.trim();
+
+      if (!name || !certNo) {
+        genStatus.textContent = "Name and Certificate Number are required.";
+        genStatus.className = "status-msg error";
+        return;
+      }
+
+      genStatus.textContent = "Rendering certificate…";
+      genStatus.className = "status-msg muted";
+
+      try {
+        const certNoUpper = normalizeCertNo(certNo);
+        const canvas = await renderCertificate(name, certNoUpper);
+        const blob = await canvasToJpegBlob(canvas);
+
+        const rid = randomId();
+        const certFilename = `${rid}-${certNoUpper.toLowerCase()}.jpg`;
+        const record = { name, cert_no: certNoUpper, file: `certs/${certFilename}` };
+
+        genStatus.textContent = "Checking existing index files and merging…";
+
+        const fieldsToIndex = [["name", name], ["cert_no", certNo]];
+        if (phone) fieldsToIndex.push(["phone", phone]);
+        if (email) fieldsToIndex.push(["email", email]);
+
+        const indexEntries = await Promise.all(
+          fieldsToIndex.map(([field, raw]) => buildMergedIndexJson(field, raw, record))
+        );
+
+        const zip = new JSZip();
+        zip.file(`certs/${certFilename}`, blob);
+        for (const entry of indexEntries) {
+          zip.file(entry.path, entry.content);
+        }
+
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        pendingZipBlob = zipBlob;
+        pendingZipFilename = `baa-cert-${certNoUpper.toLowerCase()}-${rid}.zip`;
+
+        genStatus.textContent = "Certificate generated. Review the preview above, then download the ZIP.";
+        genStatus.className = "status-msg";
+        downloadArea.hidden = false;
+        instructions.hidden = false;
+      } catch (err) {
+        console.error(err);
+        genStatus.textContent = "Something went wrong generating the certificate. Check the console for details.";
+        genStatus.className = "status-msg error";
+      }
+    });
+
+    downloadZipBtn.addEventListener("click", () => {
+      if (!pendingZipBlob) return;
+      const url = URL.createObjectURL(pendingZipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = pendingZipFilename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    });
+  </script>
+</body>
+</html>
